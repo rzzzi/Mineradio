@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, screen, session, globalShortcut, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, screen, session, globalShortcut, dialog, Tray, Menu, nativeImage } = require('electron');
 const net = require('net');
 const path = require('path');
 const fs = require('fs');
@@ -23,6 +23,10 @@ let htmlFullscreenActive = false;
 let windowFullscreenActive = false;
 let mainWindowStateTimer = null;
 const registeredGlobalHotkeys = new Map();
+
+let appTray = null;
+let closeBehavior = 'close';
+const CLOSE_BEHAVIOR_FILE = path.join(app.getPath('userData'), '.close-behavior');
 
 const WINDOWED_ASPECT = 16 / 9;
 const WINDOWED_SCALE = 3 / 4;
@@ -1097,6 +1101,74 @@ function closeOverlayWindows() {
   closeWallpaperWindow();
 }
 
+function loadCloseBehavior() {
+  try {
+    if (fs.existsSync(CLOSE_BEHAVIOR_FILE)) {
+      closeBehavior = fs.readFileSync(CLOSE_BEHAVIOR_FILE, 'utf8').trim();
+      if (closeBehavior !== 'tray') closeBehavior = 'close';
+    }
+  } catch (e) {
+    closeBehavior = 'close';
+  }
+}
+
+function saveCloseBehavior(value) {
+  closeBehavior = value === 'tray' ? 'tray' : 'close';
+  try { fs.writeFileSync(CLOSE_BEHAVIOR_FILE, closeBehavior); } catch (e) {}
+}
+
+function createTray() {
+  if (appTray) return;
+  try {
+    const iconPath = path.join(__dirname, '..', 'build', 'icon.png');
+    const icon = fs.existsSync(iconPath)
+      ? nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 })
+      : nativeImage.createEmpty();
+    appTray = new Tray(icon);
+    appTray.setToolTip('Mineradio');
+    appTray.setContextMenu(Menu.buildFromTemplate([
+      {
+        label: '显示主窗口',
+        click: () => restoreFromTray(),
+      },
+      { type: 'separator' },
+      {
+        label: '退出',
+        click: () => {
+          destroyTray();
+          app.quit();
+        },
+      },
+    ]));
+    appTray.on('double-click', () => restoreFromTray());
+  } catch (e) {
+    console.warn('[Tray] create failed:', e.message);
+  }
+}
+
+function destroyTray() {
+  if (appTray) {
+    try { appTray.destroy(); } catch (e) {}
+    appTray = null;
+  }
+}
+
+function restoreFromTray() {
+  destroyTray();
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  sendWindowState(mainWindow);
+}
+
+function minimizeToTray() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  createTray();
+  mainWindow.hide();
+  sendWindowState(mainWindow);
+}
+
 ipcMain.handle('desktop-window-minimize', (event) => {
   getSenderWindow(event)?.minimize();
 });
@@ -1118,7 +1190,25 @@ ipcMain.handle('desktop-window-get-state', (event) => {
 });
 
 ipcMain.handle('desktop-window-close', (event) => {
-  getSenderWindow(event)?.close();
+  if (closeBehavior === 'tray') {
+    minimizeToTray();
+  } else {
+    getSenderWindow(event)?.close();
+  }
+});
+
+ipcMain.handle('desktop-window-minimize-to-tray', () => {
+  minimizeToTray();
+  return { ok: true };
+});
+
+ipcMain.handle('desktop-window-get-close-behavior', () => {
+  return { behavior: closeBehavior };
+});
+
+ipcMain.handle('desktop-window-set-close-behavior', (_event, behavior) => {
+  saveCloseBehavior(behavior);
+  return { ok: true, behavior: closeBehavior };
 });
 
 ipcMain.handle('mineradio-hotkeys-configure-global', (_event, bindings) => {
@@ -1433,12 +1523,14 @@ if (!gotSingleInstanceLock) {
   app.quit();
 } else {
   app.on('second-instance', () => {
+    if (appTray) restoreFromTray();
     if (!focusMainWindow()) {
       app.whenReady().then(() => createWindow()).catch((e) => console.error('Second instance window restore failed:', e));
     }
   });
 
   app.whenReady().then(async () => {
+    loadCloseBehavior();
     screen.on('display-metrics-changed', () => {
       positionDesktopLyricsWindow();
       positionWallpaperWindow();
@@ -1459,6 +1551,7 @@ if (!gotSingleInstanceLock) {
   });
 
   app.on('before-quit', () => {
+    destroyTray();
     unregisterMineradioGlobalHotkeys();
     closeOverlayWindows();
     if (localServer && localServer.close) localServer.close();

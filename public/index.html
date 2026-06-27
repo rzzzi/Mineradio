@@ -1863,6 +1863,9 @@ html.control-glass-svg-ok #visual-guide-btn:hover{
     <button class="desktop-window-btn" data-window-action="minimize" title="最小化" aria-label="最小化">
       <svg viewBox="0 0 16 16"><path d="M3 8h10"/></svg>
     </button>
+    <button class="desktop-window-btn" data-window-action="tray" title="最小化到托盘" aria-label="最小化到托盘">
+      <svg viewBox="0 0 16 16" fill="none"><path d="M8 3v7M4 7l4 4 4-4M2 13h12"/></svg>
+    </button>
     <button class="desktop-window-btn" data-window-action="maximize" title="全屏" aria-label="全屏">
       <svg class="icon-maximize" viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1.5"/></svg>
       <svg class="icon-restore" viewBox="0 0 16 16" style="display:none"><path d="M5 3.5h7.5v7.5"/><rect x="3.5" y="5.5" width="7" height="7" rx="1.3"/></svg>
@@ -2245,6 +2248,7 @@ html.control-glass-svg-ok #visual-guide-btn:hover{
       </div>
       <div class="fx-toggle-grid">
         <div class="fx-toggle" id="t-liveBackgroundKeep" onclick="toggleFx('liveBackgroundKeep')" title="开启后后台或最小化时保持视觉渲染，不进入低占用暂停"><span>直播后台保持</span><span class="dot"></span></div>
+        <div class="fx-toggle" id="t-closeToTray" onclick="toggleCloseToTray()" title="开启后点击关闭按钮将最小化到系统托盘，而不是退出程序"><span>关闭时最小化到托盘</span><span class="dot"></span></div>
       </div>
       <div class="fx-slider"><label>粒子尺寸</label><input id="fx-point" type="range" min="0.5" max="2.2" step="0.01"><output></output></div>
       <div class="fx-slider"><label>流速</label><input id="fx-speed" type="range" min="0.2" max="2.5" step="0.01"><output></output></div>
@@ -22357,6 +22361,29 @@ function bindFxPanel() {
   });
   updateFxInputs();
 }
+function toggleCloseToTray() {
+  var api = window.desktopWindow;
+  if (!api || typeof api.getCloseBehavior !== 'function') return;
+  api.getCloseBehavior().then(function(state){
+    var next = state.behavior === 'tray' ? 'close' : 'tray';
+    api.setCloseBehavior(next).then(function(){
+      var dot = document.getElementById('t-closeToTray');
+      if (dot) dot.classList.toggle('on', next === 'tray');
+      showToast(next === 'tray' ? '关闭按钮将最小化到系统托盘' : '关闭按钮将退出程序');
+      if (next === 'tray') showToast('点 × 会最小化到托盘，按托盘图标恢复');
+    });
+  });
+}
+
+function loadCloseBehaviorState() {
+  var api = window.desktopWindow;
+  if (!api || typeof api.getCloseBehavior !== 'function') return;
+  api.getCloseBehavior().then(function(state){
+    var dot = document.getElementById('t-closeToTray');
+    if (dot) dot.classList.toggle('on', state.behavior === 'tray');
+  });
+}
+
 function toggleFx(key) {
   if (isDevelopmentLockedFx(key)) {
     normalizeDevelopmentLockedFxState();
@@ -26449,10 +26476,13 @@ function toggleFullscreen() {
       e.stopPropagation();
       var action = btn.getAttribute('data-window-action');
       if (action === 'minimize') api.minimize();
+      if (action === 'tray') api.minimizeToTray();
       if (action === 'maximize') toggleFullscreen();
       if (action === 'close') api.close();
     });
   });
+
+  loadCloseBehaviorState();
 
   if (typeof api.onDesktopLyricsLockState === 'function') {
     api.onDesktopLyricsLockState(function(payload){
