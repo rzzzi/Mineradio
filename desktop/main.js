@@ -26,6 +26,7 @@ const registeredGlobalHotkeys = new Map();
 
 let appTray = null;
 let closeBehavior = 'close';
+let windowReady = false;
 const CLOSE_BEHAVIOR_FILE = path.join(app.getPath('userData'), '.close-behavior');
 
 const WINDOWED_ASPECT = 16 / 9;
@@ -1473,10 +1474,17 @@ async function createWindow() {
     }
   });
 
+  let showFallbackTimer;
   mainWindow.once('ready-to-show', () => {
+    clearTimeout(showFallbackTimer);
     mainWindow.show();
     sendWindowState(mainWindow);
   });
+  showFallbackTimer = setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      mainWindow.show();
+    }
+  }, 8000);
 
   mainWindow.on('maximize', () => sendWindowState(mainWindow));
   mainWindow.on('unmaximize', () => sendWindowState(mainWindow));
@@ -1489,6 +1497,7 @@ async function createWindow() {
   mainWindow.on('move', () => scheduleWindowStateSend(mainWindow));
   mainWindow.on('resize', () => scheduleWindowStateSend(mainWindow));
   mainWindow.on('closed', () => {
+    clearTimeout(showFallbackTimer);
     if (mainWindowStateTimer) {
       clearTimeout(mainWindowStateTimer);
       mainWindowStateTimer = null;
@@ -1513,7 +1522,15 @@ async function createWindow() {
     setTimeout(() => applyWindowedBounds(mainWindow), 50);
   });
 
-  await mainWindow.loadURL(`http://127.0.0.1:${port}`);
+  try {
+    await mainWindow.loadURL(`http://127.0.0.1:${port}`);
+  } catch (e) {
+    console.warn('[Main] loadURL failed, showing window anyway:', e.message);
+    clearTimeout(showFallbackTimer);
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      mainWindow.show();
+    }
+  }
 }
 
 app.setName(APP_NAME);
@@ -1524,9 +1541,11 @@ if (!gotSingleInstanceLock) {
 } else {
   app.on('second-instance', () => {
     if (appTray) restoreFromTray();
-    if (!focusMainWindow()) {
-      app.whenReady().then(() => createWindow()).catch((e) => console.error('Second instance window restore failed:', e));
-    }
+    if (windowReady && focusMainWindow()) return;
+    const timer = setInterval(() => {
+      if (windowReady && focusMainWindow()) clearInterval(timer);
+    }, 200);
+    setTimeout(() => clearInterval(timer), 30000);
   });
 
   app.whenReady().then(async () => {
@@ -1538,12 +1557,20 @@ if (!gotSingleInstanceLock) {
     });
     screen.on('display-added', () => scheduleWindowStateSend(mainWindow));
     screen.on('display-removed', () => scheduleWindowStateSend(mainWindow));
-    await createWindow();
-  });
+    try {
+      await createWindow();
+    } finally {
+      windowReady = true;
+    }
+  }).catch((e) => console.error('[Main] initialization failed:', e));
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-    else focusMainWindow();
+    if (!windowReady) return;
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow().catch((e) => console.warn('[Main] activate createWindow failed:', e));
+    } else {
+      focusMainWindow();
+    }
   });
 
   app.on('window-all-closed', () => {
